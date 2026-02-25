@@ -1,5 +1,9 @@
 # vatic
 
+<p align="center">
+  <img src="assets/logo.svg" alt="vatic" width="420">
+</p>
+
 I wanted a single binary that could run AI prompts on a schedule, respond to messages on Telegram or WhatsApp, and email me the results -- all configured with plain TOML files. No Python glue, no orchestration layer, no YAML indentation nightmares. Just a Rust daemon that reads a config directory and does the thing.
 
 That's vatic. It's a TOML-configured AI agent framework. You define jobs that run prompts through LLM backends (Claude CLI, Ollama), on a cron schedule or triggered by channel messages, with templated prompts and multiple output targets.
