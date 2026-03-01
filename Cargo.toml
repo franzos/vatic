@@ -1,6 +1,6 @@
 [package]
 name = "vatic"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "TOML-configured AI agent framework with scheduled jobs, channel integrations, and templated prompts"
 license = "GPL-3.0-only"
