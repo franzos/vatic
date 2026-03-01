@@ -1,12 +1,40 @@
 use rusqlite::{Connection, OptionalExtension};
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::error::Result;
 use crate::template::functions::MemoryEntry;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "user" => Self::User,
+            _ => Self::Assistant,
+        }
+    }
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionMessage {
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
     pub timestamp: String,
 }
@@ -17,7 +45,7 @@ pub struct Store {
 
 impl Store {
     /// Open or create the database at the given path.
-    pub fn open(path: &PathBuf) -> Result<Self> {
+    pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         let store = Self { conn };
         store.migrate()?;
@@ -116,13 +144,36 @@ impl Store {
         &self,
         channel: &str,
         sender: &str,
-        role: &str,
+        role: MessageRole,
         content: &str,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (channel, sender, role, content) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![channel, sender, role, content],
+            rusqlite::params![channel, sender, role.as_str(), content],
         )?;
+        Ok(())
+    }
+
+    /// Remove old data to prevent unbounded growth.
+    /// Keeps the most recent `max_runs` per job and sessions from the last `max_session_days`.
+    pub fn prune(&self, max_runs: u32, max_session_days: u32) -> Result<()> {
+        // Prune job_runs: keep only the latest max_runs per job_alias
+        self.conn.execute(
+            "DELETE FROM job_runs WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY job_alias ORDER BY id DESC) AS rn
+                    FROM job_runs
+                ) WHERE rn <= ?1
+            )",
+            rusqlite::params![max_runs],
+        )?;
+
+        // Prune sessions older than max_session_days
+        self.conn.execute(
+            "DELETE FROM sessions WHERE created_at < datetime('now', ?1)",
+            rusqlite::params![format!("-{max_session_days} days")],
+        )?;
+
         Ok(())
     }
 
@@ -141,8 +192,9 @@ impl Store {
 
         let mut entries: Vec<SessionMessage> = stmt
             .query_map(rusqlite::params![channel, sender, limit], |row| {
+                let role_str: String = row.get(0)?;
                 Ok(SessionMessage {
-                    role: row.get(0)?,
+                    role: MessageRole::from_str(&role_str),
                     content: row.get(1)?,
                     timestamp: row.get(2)?,
                 })
@@ -259,22 +311,22 @@ mod tests {
     fn test_store_and_get_session() {
         let store = Store::open_memory().unwrap();
         store
-            .store_message("#general", "alice", "user", "hello")
+            .store_message("#general", "alice", MessageRole::User, "hello")
             .unwrap();
         store
-            .store_message("#general", "alice", "assistant", "hi there")
+            .store_message("#general", "alice", MessageRole::Assistant, "hi there")
             .unwrap();
         store
-            .store_message("#general", "alice", "user", "how are you?")
+            .store_message("#general", "alice", MessageRole::User, "how are you?")
             .unwrap();
 
         let messages = store.get_session("#general", "alice", 10).unwrap();
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].role, MessageRole::User);
         assert_eq!(messages[0].content, "hello");
-        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].role, MessageRole::Assistant);
         assert_eq!(messages[1].content, "hi there");
-        assert_eq!(messages[2].role, "user");
+        assert_eq!(messages[2].role, MessageRole::User);
         assert_eq!(messages[2].content, "how are you?");
     }
 
@@ -283,7 +335,7 @@ mod tests {
         let store = Store::open_memory().unwrap();
         for i in 1..=5 {
             store
-                .store_message("#ch", "bob", "user", &format!("msg {i}"))
+                .store_message("#ch", "bob", MessageRole::User, &format!("msg {i}"))
                 .unwrap();
         }
 
@@ -298,10 +350,10 @@ mod tests {
     fn test_session_sender_isolation() {
         let store = Store::open_memory().unwrap();
         store
-            .store_message("#ch", "alice", "user", "alice msg")
+            .store_message("#ch", "alice", MessageRole::User, "alice msg")
             .unwrap();
         store
-            .store_message("#ch", "bob", "user", "bob msg")
+            .store_message("#ch", "bob", MessageRole::User, "bob msg")
             .unwrap();
 
         let alice_msgs = store.get_session("#ch", "alice", 10).unwrap();
@@ -317,10 +369,10 @@ mod tests {
     fn test_session_channel_isolation() {
         let store = Store::open_memory().unwrap();
         store
-            .store_message("#general", "alice", "user", "general msg")
+            .store_message("#general", "alice", MessageRole::User, "general msg")
             .unwrap();
         store
-            .store_message("#random", "alice", "user", "random msg")
+            .store_message("#random", "alice", MessageRole::User, "random msg")
             .unwrap();
 
         let general = store.get_session("#general", "alice", 10).unwrap();

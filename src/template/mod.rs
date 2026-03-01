@@ -20,7 +20,7 @@ pub async fn render(template: &str, ctx: &RenderContext) -> Result<String> {
 fn render_tokens<'a>(
     tokens: &'a [Token<'a>],
     ctx: &'a RenderContext,
-) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
     Box::pin(async move {
         let mut output = String::new();
         let mut i = 0;

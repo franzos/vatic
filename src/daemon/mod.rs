@@ -1,6 +1,7 @@
 pub mod scheduler;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Local;
@@ -13,7 +14,7 @@ use crate::channel::telegram::TelegramChannel;
 #[cfg(feature = "whatsapp")]
 use crate::channel::whatsapp::WhatsAppChannel;
 use crate::channel::{Channel, IncomingMessage};
-use crate::config::types::{ChannelSection, JobConfig};
+use crate::config::types::{ChannelSection, JobConfig, TriggerMatch};
 use crate::config::AppConfig;
 use crate::env;
 use crate::error::Result;
@@ -36,11 +37,18 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
         })?;
     }
     let store = Store::open(&db_path)?;
+    if let Err(e) = store.prune(1000, 30) {
+        tracing::warn!("database pruning failed: {e}");
+    }
 
     tracing::info!("config: {}", app.config_dir.display());
     tracing::info!("data:   {}", app.data_dir.display());
     for (alias, job) in &app.jobs {
-        let env_name = job.environment.as_ref().map_or("local", |e| &e.name);
+        let env_name = job
+            .environment
+            .as_ref()
+            .map(|e| e.name)
+            .unwrap_or(crate::config::types::EnvironmentName::Local);
         let via = job
             .input
             .as_ref()
@@ -154,22 +162,30 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
                         continue;
                     }
 
-                    match run_channel_job(app, &store, alias, job_config, &msg).await {
-                        Ok(result) => {
-                            for out in &job_config.outputs {
-                                if out.channel.is_some() {
-                                    if let Some(ch) = channels.get(&msg.channel) {
-                                        if let Err(e) = ch.send(&msg.sender, &result).await {
-                                            tracing::error!("failed to send response on {}: {}", msg.channel, e);
+                    let db_path = db_path.clone();
+                    let app = app.clone();
+                    let alias = alias.clone();
+                    let job_config = job_config.clone();
+                    let msg = msg.clone();
+                    let channels = channels.clone();
+                    tokio::spawn(async move {
+                        match run_channel_job(&app, &db_path, &alias, &job_config, &msg).await {
+                            Ok(result) => {
+                                for out in &job_config.outputs {
+                                    if out.channel.is_some() {
+                                        if let Some(ch) = channels.get(&msg.channel) {
+                                            if let Err(e) = ch.send(&msg.sender, &result).await {
+                                                tracing::error!("failed to send response on {}: {}", msg.channel, e);
+                                            }
                                         }
                                     }
                                 }
                             }
+                            Err(e) => {
+                                tracing::error!("job {} failed: {}", alias, e);
+                            }
                         }
-                        Err(e) => {
-                            tracing::error!("job {} failed: {}", alias, e);
-                        }
-                    }
+                    });
                 }
             }
             _ = cron_interval.tick() => {
@@ -179,10 +195,15 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
                         if next <= now {
                             tracing::info!("[{}] cron triggered", alias);
                             if let Some((_, job_config)) = app.jobs.iter().find(|(a, _)| a == alias) {
-                                match run_scheduled_job(app, &store, alias, job_config).await {
-                                    Ok(_) => {}
-                                    Err(e) => tracing::error!("[{}] scheduled job failed: {}", alias, e),
-                                }
+                                let db_path = db_path.clone();
+                                let app = app.clone();
+                                let alias = alias.clone();
+                                let job_config = job_config.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = run_scheduled_job(&app, &db_path, &alias, &job_config).await {
+                                        tracing::error!("[{}] scheduled job failed: {}", alias, e);
+                                    }
+                                });
                             }
                         }
                     }
@@ -197,10 +218,12 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
 
 async fn run_scheduled_job(
     app: &AppConfig,
-    store: &Store,
+    db_path: &PathBuf,
     alias: &str,
     job_config: &JobConfig,
 ) -> Result<String> {
+    let store = Store::open(db_path)?;
+
     let prompt_template = job_config
         .job
         .as_ref()
@@ -278,11 +301,11 @@ pub fn matches_input(job: &JobConfig, msg: &IncomingMessage) -> bool {
         if trigger != "*" {
             let text_lower = msg.text.to_lowercase();
             let trigger_lower = trigger.to_lowercase();
-            let mode = input.trigger_match.as_deref().unwrap_or("anywhere");
+            let mode = input.trigger_match.unwrap_or_default();
             let matched = match mode {
-                "start" => text_lower.starts_with(&trigger_lower),
-                "end" => text_lower.ends_with(&trigger_lower),
-                _ => text_lower.contains(&trigger_lower),
+                TriggerMatch::Start => text_lower.starts_with(&trigger_lower),
+                TriggerMatch::End => text_lower.ends_with(&trigger_lower),
+                TriggerMatch::Anywhere => text_lower.contains(&trigger_lower),
             };
             if !matched {
                 return false;
@@ -295,11 +318,13 @@ pub fn matches_input(job: &JobConfig, msg: &IncomingMessage) -> bool {
 
 async fn run_channel_job(
     app: &AppConfig,
-    store: &Store,
+    db_path: &PathBuf,
     alias: &str,
     job_config: &JobConfig,
     msg: &IncomingMessage,
 ) -> Result<String> {
+    let store = Store::open(db_path)?;
+
     let env_wrapper = env::create_environment(job_config.environment.as_ref())?;
     env_wrapper.ensure_ready()?;
     let agent = agent::create_agent(&job_config.agent)?;
@@ -335,8 +360,8 @@ async fn run_channel_job(
         .await?;
 
     if job_config.session.is_some() {
-        store.store_message(&msg.channel, &msg.sender, "user", &msg.text)?;
-        store.store_message(&msg.channel, &msg.sender, "assistant", &result)?;
+        store.store_message(&msg.channel, &msg.sender, crate::store::MessageRole::User, &msg.text)?;
+        store.store_message(&msg.channel, &msg.sender, crate::store::MessageRole::Assistant, &result)?;
     }
 
     store.store_run(alias, &result)?;
@@ -348,10 +373,9 @@ async fn run_channel_job(
 pub fn build_session_context(history: &[SessionMessage], current_message: &str) -> String {
     let mut parts = Vec::new();
     for m in history {
-        let role = if m.role == "user" {
-            "User"
-        } else {
-            "Assistant"
+        let role = match m.role {
+            crate::store::MessageRole::User => "User",
+            crate::store::MessageRole::Assistant => "Assistant",
         };
         parts.push(format!("{}: {}", role, m.content));
     }
@@ -362,12 +386,12 @@ pub fn build_session_context(history: &[SessionMessage], current_message: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::types::{AgentSection, InputSection, JobConfig};
-    use crate::store::SessionMessage;
+    use crate::config::types::{AgentName, AgentSection, InputSection, JobConfig, TriggerMatch};
+    use crate::store::{MessageRole, SessionMessage};
 
     fn make_agent() -> AgentSection {
         AgentSection {
-            name: "claude".into(),
+            name: AgentName::Claude,
             prompt: None,
             host: None,
             model: None,
@@ -502,7 +526,7 @@ mod tests {
         let job = make_job(Some(InputSection {
             channel: "telegram".into(),
             trigger: Some("vatic".into()),
-            trigger_match: Some("start".into()),
+            trigger_match: Some(TriggerMatch::Start),
             allowed_senders: None,
         }));
         assert!(matches_input(&job, &make_msg("telegram", "vatic help me")));
@@ -517,7 +541,7 @@ mod tests {
         let job = make_job(Some(InputSection {
             channel: "telegram".into(),
             trigger: Some("vatic".into()),
-            trigger_match: Some("end".into()),
+            trigger_match: Some(TriggerMatch::End),
             allowed_senders: None,
         }));
         assert!(matches_input(&job, &make_msg("telegram", "ask vatic")));
@@ -535,22 +559,22 @@ mod tests {
     fn test_build_context_with_history() {
         let history = vec![
             SessionMessage {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: "m1".into(),
                 timestamp: "2026-01-01 00:00:00".into(),
             },
             SessionMessage {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content: "r1".into(),
                 timestamp: "2026-01-01 00:00:01".into(),
             },
             SessionMessage {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: "m2".into(),
                 timestamp: "2026-01-01 00:00:02".into(),
             },
             SessionMessage {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content: "r2".into(),
                 timestamp: "2026-01-01 00:00:03".into(),
             },
@@ -613,7 +637,7 @@ mod tests {
     #[test]
     fn test_build_context_content_with_newlines() {
         let history = vec![SessionMessage {
-            role: "user".into(),
+            role: MessageRole::User,
             content: "line1\nline2".into(),
             timestamp: "2026-01-01 00:00:00".into(),
         }];
@@ -638,7 +662,7 @@ mod tests {
         let job = make_job(Some(InputSection {
             channel: "telegram".into(),
             trigger: Some("Vatic".into()),
-            trigger_match: Some("start".into()),
+            trigger_match: Some(TriggerMatch::Start),
             allowed_senders: None,
         }));
         assert!(matches_input(&job, &make_msg("telegram", "vatic help")));

@@ -25,9 +25,9 @@ whatsapp = [
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "io-std", "signal"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1.0"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"

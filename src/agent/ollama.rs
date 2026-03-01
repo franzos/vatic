@@ -106,7 +106,7 @@ mod tests {
 
     fn make_agent(host: Option<&str>, model: Option<&str>) -> OllamaAgent {
         let config = AgentSection {
-            name: "ollama".to_string(),
+            name: crate::config::types::AgentName::Ollama,
             prompt: None,
             host: host.map(|s| s.to_string()),
             model: model.map(|s| s.to_string()),

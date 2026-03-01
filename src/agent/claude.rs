@@ -78,10 +78,13 @@ impl Agent for ClaudeAgent {
             // stdin drops here, signaling EOF to the child process
         }
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| Error::Agent(format!("failed to wait for process: {e}")))?;
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            child.wait_with_output(),
+        )
+        .await
+        .map_err(|_| Error::Agent("claude process timed out after 5 minutes".to_string()))?
+        .map_err(|e| Error::Agent(format!("failed to wait for process: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -104,7 +107,7 @@ mod tests {
 
     fn make_agent(model: Option<&str>) -> ClaudeAgent {
         let config = AgentSection {
-            name: "claude".to_string(),
+            name: crate::config::types::AgentName::Claude,
             prompt: None,
             host: None,
             model: model.map(|s| s.to_string()),
@@ -116,7 +119,7 @@ mod tests {
 
     fn make_agent_with_permissions(skip: Option<bool>, tools: Option<Vec<String>>) -> ClaudeAgent {
         let config = AgentSection {
-            name: "claude".to_string(),
+            name: crate::config::types::AgentName::Claude,
             prompt: None,
             host: None,
             model: None,

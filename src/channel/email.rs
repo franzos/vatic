@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use tokio::sync::mpsc;
+
+const MAX_SEEN: usize = 10_000;
 
 use super::{Channel, IncomingMessage};
 
@@ -36,6 +38,7 @@ impl EmailChannel {
 impl Channel for EmailChannel {
     async fn start(&self, tx: mpsc::Sender<IncomingMessage>) -> crate::error::Result<()> {
         let mut seen: HashSet<String> = HashSet::new();
+        let mut seen_order: VecDeque<String> = VecDeque::new();
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(self.poll_interval));
 
@@ -55,6 +58,12 @@ impl Channel for EmailChannel {
                     continue;
                 }
                 seen.insert(envelope.id.clone());
+                seen_order.push_back(envelope.id.clone());
+                while seen.len() > MAX_SEEN {
+                    if let Some(old) = seen_order.pop_front() {
+                        seen.remove(&old);
+                    }
+                }
 
                 let body = match read_message(&envelope.id, self.account.as_deref()).await {
                     Ok(body) => body,
@@ -162,11 +171,15 @@ async fn list_envelopes(
         args.extend(["--account", acct]);
     }
 
-    let output = tokio::process::Command::new("himalaya")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| crate::error::Error::Channel(format!("cannot run himalaya: {e}")))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new("himalaya")
+            .args(&args)
+            .output(),
+    )
+    .await
+    .map_err(|_| crate::error::Error::Channel("himalaya envelope list timed out".to_string()))?
+    .map_err(|e| crate::error::Error::Channel(format!("cannot run himalaya: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -190,11 +203,15 @@ async fn read_message(
         args.extend(["--account", acct]);
     }
 
-    let output = tokio::process::Command::new("himalaya")
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| crate::error::Error::Channel(format!("cannot run himalaya: {e}")))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new("himalaya")
+            .args(&args)
+            .output(),
+    )
+    .await
+    .map_err(|_| crate::error::Error::Channel("himalaya message read timed out".to_string()))?
+    .map_err(|e| crate::error::Error::Channel(format!("cannot run himalaya: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

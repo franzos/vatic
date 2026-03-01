@@ -63,9 +63,25 @@ pub fn parse_channel_config(toml_str: &str) -> Result<ChannelConfig> {
         .map_err(|e| Error::Config(format!("failed to parse channel config: {e}")))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentName {
+    Claude,
+    Ollama,
+}
+
+impl std::fmt::Display for AgentName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Claude => f.write_str("claude"),
+            Self::Ollama => f.write_str("ollama"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentSection {
-    pub name: String,
+    pub name: AgentName,
     pub prompt: Option<String>,
     pub host: Option<String>,
     pub model: Option<String>,
@@ -81,17 +97,66 @@ pub struct JobSection {
     pub prompt: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub enum EnvironmentName {
+    #[serde(rename = "local")]
+    Local,
+    #[serde(rename = "guix-shell")]
+    GuixShell,
+    #[serde(rename = "guix-shell-container")]
+    GuixShellContainer,
+    #[serde(rename = "podman")]
+    Podman,
+}
+
+impl std::fmt::Display for EnvironmentName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => f.write_str("local"),
+            Self::GuixShell => f.write_str("guix-shell"),
+            Self::GuixShellContainer => f.write_str("guix-shell-container"),
+            Self::Podman => f.write_str("podman"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct EnvironmentSection {
-    pub name: String,
+    pub name: EnvironmentName,
     pub pwd: Option<String>,
     pub packages: Option<Vec<String>>,
     pub image: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputName {
+    Notification,
+    Msmtp,
+    Command,
+    Channel,
+}
+
+impl Default for OutputName {
+    fn default() -> Self {
+        Self::Notification
+    }
+}
+
+impl std::fmt::Display for OutputName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Notification => f.write_str("notification"),
+            Self::Msmtp => f.write_str("msmtp"),
+            Self::Command => f.write_str("command"),
+            Self::Channel => f.write_str("channel"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct OutputSection {
-    pub name: Option<String>,
+    pub name: Option<OutputName>,
     pub channel: Option<String>,
     pub to: Option<String>,
     pub subject: Option<String>,
@@ -99,12 +164,25 @@ pub struct OutputSection {
     pub command: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TriggerMatch {
+    Anywhere,
+    Start,
+    End,
+}
+
+impl Default for TriggerMatch {
+    fn default() -> Self {
+        Self::Anywhere
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct InputSection {
     pub channel: String,
     pub trigger: Option<String>,
-    /// "anywhere" (default), "start", or "end".
-    pub trigger_match: Option<String>,
+    pub trigger_match: Option<TriggerMatch>,
     /// If unset, all senders are allowed.
     pub allowed_senders: Option<Vec<String>>,
 }
@@ -204,10 +282,9 @@ pub fn parse_job_config(value: &toml::Value) -> Result<JobConfig> {
 
 /// Convenience wrapper for tests and one-off parsing.
 pub fn parse_job_config_str(toml_str: &str) -> Result<JobConfig> {
-    let value: toml::Value = toml_str
-        .parse()
-        .map_err(|e: toml::de::Error| Error::Config(format!("invalid TOML: {e}")))?;
-    parse_job_config(&value)
+    let table: toml::Table = toml::from_str(toml_str)
+        .map_err(|e| Error::Config(format!("invalid TOML: {e}")))?;
+    parse_job_config(&toml::Value::Table(table))
 }
 
 #[cfg(test)]
@@ -238,7 +315,7 @@ message = "Good morning {% custom:name %}; {% result %}"
         let config = parse_job_config_str(toml_str).unwrap();
         assert_eq!(config.name.as_deref(), Some("Today's weather"));
         assert_eq!(config.alias.as_deref(), Some("weather"));
-        assert_eq!(config.agent.name, "claude");
+        assert_eq!(config.agent.name, AgentName::Claude);
         assert_eq!(
             config.agent.prompt.as_deref(),
             Some("You are a weather reporter.")
@@ -248,7 +325,7 @@ message = "Good morning {% custom:name %}; {% result %}"
         assert_eq!(job.interval.as_deref(), Some("0 8 * * *"));
         assert!(config.environment.is_some());
         assert_eq!(config.outputs.len(), 1);
-        assert_eq!(config.outputs[0].name.as_deref(), Some("notification"));
+        assert_eq!(config.outputs[0].name, Some(OutputName::Notification));
     }
 
     #[test]
@@ -260,7 +337,7 @@ name = "claude"
         let config = parse_job_config_str(toml_str).unwrap();
         assert!(config.name.is_none());
         assert!(config.alias.is_none());
-        assert_eq!(config.agent.name, "claude");
+        assert_eq!(config.agent.name, AgentName::Claude);
         assert!(config.job.is_none());
         assert!(config.environment.is_none());
         assert!(config.outputs.is_empty());
@@ -281,7 +358,7 @@ message = "Hello {% result %}"
 "#;
         let config = parse_job_config_str(toml_str).unwrap();
         assert_eq!(config.outputs.len(), 1);
-        assert_eq!(config.outputs[0].name.as_deref(), Some("notification"));
+        assert_eq!(config.outputs[0].name, Some(OutputName::Notification));
         assert_eq!(
             config.outputs[0].message.as_deref(),
             Some("Hello {% result %}")
@@ -306,8 +383,8 @@ message = "Email: {% result %}"
 "#;
         let config = parse_job_config_str(toml_str).unwrap();
         assert_eq!(config.outputs.len(), 2);
-        assert_eq!(config.outputs[0].name.as_deref(), Some("notification"));
-        assert_eq!(config.outputs[1].name.as_deref(), Some("msmtp"));
+        assert_eq!(config.outputs[0].name, Some(OutputName::Notification));
+        assert_eq!(config.outputs[1].name, Some(OutputName::Msmtp));
         assert_eq!(config.outputs[1].to.as_deref(), Some("user@example.com"));
     }
 

@@ -4,7 +4,7 @@ pub mod local;
 pub mod podman;
 
 use crate::config::types::EnvironmentSection;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub trait EnvironmentWrapper: Send + Sync {
     /// One-time setup before first use (e.g. building a container image).
@@ -23,26 +23,27 @@ pub trait EnvironmentWrapper: Send + Sync {
 pub fn create_environment(
     config: Option<&EnvironmentSection>,
 ) -> Result<Box<dyn EnvironmentWrapper>> {
+    use crate::config::types::EnvironmentName;
+
     match config {
         None => Ok(Box::new(local::LocalEnvironment::new(None))),
         Some(section) => {
             let packages = section.packages.clone().unwrap_or_default();
-            match section.name.as_str() {
-                "local" => Ok(Box::new(local::LocalEnvironment::new(
+            match section.name {
+                EnvironmentName::Local => Ok(Box::new(local::LocalEnvironment::new(
                     section.pwd.as_deref(),
                 ))),
-                "guix-shell" => Ok(Box::new(guix::GuixShellEnvironment::new(
+                EnvironmentName::GuixShell => Ok(Box::new(guix::GuixShellEnvironment::new(
                     section.pwd.as_deref(),
                     packages,
                 ))),
-                "guix-shell-container" => Ok(Box::new(
+                EnvironmentName::GuixShellContainer => Ok(Box::new(
                     guix_container::GuixContainerEnvironment::new(section.pwd.as_deref(), packages),
                 )),
-                "podman" => Ok(Box::new(podman::PodmanEnvironment::new(
+                EnvironmentName::Podman => Ok(Box::new(podman::PodmanEnvironment::new(
                     section.pwd.as_deref(),
                     section.image.as_deref(),
                 ))),
-                other => Err(Error::Config(format!("unknown environment: '{other}'"))),
             }
         }
     }
@@ -53,9 +54,11 @@ mod tests {
     use super::*;
     use crate::config::types::EnvironmentSection;
 
-    fn env_config(name: &str) -> EnvironmentSection {
+    use crate::config::types::EnvironmentName;
+
+    fn env_config(name: EnvironmentName) -> EnvironmentSection {
         EnvironmentSection {
-            name: name.to_string(),
+            name,
             pwd: None,
             packages: None,
             image: None,
@@ -70,40 +73,25 @@ mod tests {
 
     #[test]
     fn test_create_env_local() {
-        let result = create_environment(Some(&env_config("local")));
+        let result = create_environment(Some(&env_config(EnvironmentName::Local)));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_create_env_guix_shell() {
-        let result = create_environment(Some(&env_config("guix-shell")));
+        let result = create_environment(Some(&env_config(EnvironmentName::GuixShell)));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_create_env_guix_container() {
-        let result = create_environment(Some(&env_config("guix-shell-container")));
+        let result = create_environment(Some(&env_config(EnvironmentName::GuixShellContainer)));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_create_env_podman() {
-        let result = create_environment(Some(&env_config("podman")));
+        let result = create_environment(Some(&env_config(EnvironmentName::Podman)));
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_create_env_unknown() {
-        let result = create_environment(Some(&env_config("bogus")));
-        match result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("unknown environment"),
-                    "expected 'unknown environment' in: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected Err for unknown environment"),
-        }
     }
 }

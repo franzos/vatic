@@ -32,10 +32,13 @@ pub async fn send(
             .map_err(|e| Error::Output(format!("failed to write to msmtp stdin: {e}")))?;
     }
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| Error::Output(format!("failed to wait for msmtp: {e}")))?;
+    let status = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        child.wait(),
+    )
+    .await
+    .map_err(|_| Error::Output("msmtp timed out after 60 seconds".to_string()))?
+    .map_err(|e| Error::Output(format!("failed to wait for msmtp: {e}")))?;
 
     if !status.success() {
         return Err(Error::Output(format!(
@@ -103,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_to() {
         let output = OutputSection {
-            name: Some("msmtp".to_string()),
+            name: Some(crate::config::types::OutputName::Msmtp),
             channel: None,
             to: None,
             subject: None,

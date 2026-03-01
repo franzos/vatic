@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::config::types::AgentSection;
 use crate::env::EnvironmentWrapper;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[async_trait]
 pub trait Agent: Send + Sync {
@@ -19,10 +19,9 @@ pub trait Agent: Send + Sync {
 
 /// Factory — maps an agent name from config to its implementation.
 pub fn create_agent(config: &AgentSection) -> Result<Box<dyn Agent>> {
-    match config.name.as_str() {
-        "claude" => Ok(Box::new(claude::ClaudeAgent::new(config))),
-        "ollama" => Ok(Box::new(ollama::OllamaAgent::new(config))),
-        other => Err(Error::Agent(format!("unknown agent: '{other}'"))),
+    match config.name {
+        crate::config::types::AgentName::Claude => Ok(Box::new(claude::ClaudeAgent::new(config))),
+        crate::config::types::AgentName::Ollama => Ok(Box::new(ollama::OllamaAgent::new(config))),
     }
 }
 
@@ -31,9 +30,11 @@ mod tests {
     use super::*;
     use crate::config::types::AgentSection;
 
-    fn agent_config(name: &str) -> AgentSection {
+    use crate::config::types::AgentName;
+
+    fn agent_config(name: AgentName) -> AgentSection {
         AgentSection {
-            name: name.to_string(),
+            name,
             prompt: None,
             host: None,
             model: None,
@@ -44,28 +45,13 @@ mod tests {
 
     #[test]
     fn test_create_claude_agent() {
-        let result = create_agent(&agent_config("claude"));
+        let result = create_agent(&agent_config(AgentName::Claude));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_create_ollama_agent() {
-        let result = create_agent(&agent_config("ollama"));
+        let result = create_agent(&agent_config(AgentName::Ollama));
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_create_unknown_agent() {
-        let result = create_agent(&agent_config("unknown"));
-        match result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("unknown agent"),
-                    "expected 'unknown agent' in: {msg}"
-                );
-            }
-            Ok(_) => panic!("expected Err for unknown agent"),
-        }
     }
 }

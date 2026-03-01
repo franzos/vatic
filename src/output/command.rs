@@ -16,12 +16,16 @@ pub async fn execute(
 
     let command = prepare_command(command_template);
 
-    let output = tokio::process::Command::new("sh")
-        .args(["-c", &command])
-        .env("VATIC_RESULT", result)
-        .output()
-        .await
-        .map_err(|e| Error::Output(format!("failed to run command: {e}")))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::process::Command::new("sh")
+            .args(["-c", &command])
+            .env("VATIC_RESULT", result)
+            .output(),
+    )
+    .await
+    .map_err(|_| Error::Output("command timed out after 60 seconds".to_string()))?
+    .map_err(|e| Error::Output(format!("failed to run command: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -60,7 +64,7 @@ mod tests {
     #[tokio::test]
     async fn test_result_passed_as_env_var() {
         let output = OutputSection {
-            name: Some("command".to_string()),
+            name: Some(crate::config::types::OutputName::Command),
             channel: None,
             to: None,
             subject: None,
@@ -74,7 +78,7 @@ mod tests {
     #[tokio::test]
     async fn test_missing_command() {
         let output = OutputSection {
-            name: Some("command".to_string()),
+            name: Some(crate::config::types::OutputName::Command),
             channel: None,
             to: None,
             subject: None,

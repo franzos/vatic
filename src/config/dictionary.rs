@@ -22,13 +22,8 @@ impl Dictionary {
         }
 
         let content = std::fs::read_to_string(path)?;
-        let value: toml::Value = content
-            .parse()
-            .map_err(|e: toml::de::Error| Error::Config(format!("invalid dictionary TOML: {e}")))?;
-
-        let table = value
-            .as_table()
-            .ok_or_else(|| Error::Config("dictionary TOML must be a table".into()))?;
+        let table: toml::Table = toml::from_str(&content)
+            .map_err(|e| Error::Config(format!("invalid dictionary TOML: {e}")))?;
 
         let mut entries = HashMap::new();
         for (section, val) in table {
