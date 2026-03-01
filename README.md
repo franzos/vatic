@@ -24,6 +24,7 @@ That's vatic. It's a TOML-configured AI agent framework. You define jobs that ru
 | Method | Command |
 |--------|---------|
 | Cargo | `cargo install vatic` |
+| Homebrew | `brew tap franzos/tap && brew install vatic` |
 | Debian/Ubuntu | Download [`.deb`](https://github.com/franzos/vatic/releases) -- `sudo dpkg -i vatic_*_amd64.deb` |
 | Fedora/RHEL | Download [`.rpm`](https://github.com/franzos/vatic/releases) -- `sudo rpm -i vatic-*.x86_64.rpm` |
 | Guix | `guix install -L <panther> vatic` ([Panther channel](https://github.com/franzos/panther)) |
