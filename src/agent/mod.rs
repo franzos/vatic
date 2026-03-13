@@ -40,6 +40,7 @@ mod tests {
             model: None,
             skip_permissions: None,
             allowed_tools: None,
+            timeout: None,
         }
     }
 

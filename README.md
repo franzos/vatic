@@ -91,6 +91,14 @@ message = "Good morning {% custom:name %}; {% result %}"
 | `claude` | `name = "claude"` | Spawns `claude --print` CLI |
 | `ollama` | `name = "ollama"`, `host`, `model` | HTTP POST to `/api/generate` |
 
+Both backends accept an optional `timeout` (seconds, default 300). Set to `0` for unlimited:
+
+```toml
+[agent]
+name = "claude"
+timeout = 0   # no timeout
+```
+
 ### Channels
 
 | Channel | Config | How it works |

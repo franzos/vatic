@@ -130,9 +130,8 @@ fn load_channels(config_dir: &Path) -> Result<Vec<(String, ChannelConfig)>> {
 /// Load `config_dir/jobs/*.toml`, keyed by alias or filename.
 fn load_jobs(config_dir: &Path) -> Result<Vec<(String, JobConfig)>> {
     load_toml_dir(&config_dir.join("jobs"), |content, path| {
-        let table: toml::Table = toml::from_str(&content).map_err(|e| {
-            Error::Config(format!("invalid TOML in {}: {e}", path.display()))
-        })?;
+        let table: toml::Table = toml::from_str(&content)
+            .map_err(|e| Error::Config(format!("invalid TOML in {}: {e}", path.display())))?;
         let value = toml::Value::Table(table);
         let config = parse_job_config(&value)?;
         let key = config.alias.clone().unwrap_or_else(|| filename_key(path));

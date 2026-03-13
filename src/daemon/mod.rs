@@ -2,7 +2,8 @@ pub mod scheduler;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use chrono::Local;
 
@@ -25,6 +26,47 @@ use crate::template::functions::RenderContext;
 use tokio::sync::mpsc;
 
 use self::scheduler::CronSchedule;
+
+struct JobState {
+    running: bool,
+    last_started: Option<Instant>,
+}
+
+type JobTracker = Arc<Mutex<HashMap<String, JobState>>>;
+
+/// Try to acquire a job slot. Returns true if the job should proceed.
+fn try_acquire(tracker: &JobTracker, alias: &str, exclusive: bool, cooldown: Option<u64>) -> bool {
+    let mut map = tracker.lock().unwrap();
+    let state = map.entry(alias.to_string()).or_insert(JobState {
+        running: false,
+        last_started: None,
+    });
+
+    if exclusive && state.running {
+        tracing::debug!("[{alias}] skipped: already running");
+        return false;
+    }
+
+    if let Some(cd) = cooldown {
+        if let Some(started) = state.last_started {
+            if started.elapsed().as_secs() < cd {
+                tracing::debug!("[{alias}] skipped: cooldown ({cd}s) not elapsed");
+                return false;
+            }
+        }
+    }
+
+    state.running = true;
+    state.last_started = Some(Instant::now());
+    true
+}
+
+/// Release a job slot after completion.
+fn release(tracker: &JobTracker, alias: &str) {
+    if let Some(state) = tracker.lock().unwrap().get_mut(alias) {
+        state.running = false;
+    }
+}
 
 /// Main loop — listens on channels, runs cron schedules, dispatches jobs.
 pub async fn run_daemon(app: &AppConfig) -> Result<()> {
@@ -58,6 +100,8 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
             });
         tracing::info!("[{}] in {} via {}", alias, env_name, via);
     }
+
+    let tracker: JobTracker = Arc::new(Mutex::new(HashMap::new()));
 
     let (tx, mut rx) = mpsc::channel::<IncomingMessage>(100);
 
@@ -162,14 +206,23 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
                         continue;
                     }
 
+                    let exclusive = job_config.job.as_ref().and_then(|j| j.exclusive).unwrap_or(true);
+                    let cooldown = job_config.job.as_ref().and_then(|j| j.cooldown);
+                    if !try_acquire(&tracker, alias, exclusive, cooldown) {
+                        continue;
+                    }
+
                     let db_path = db_path.clone();
                     let app = app.clone();
                     let alias = alias.clone();
                     let job_config = job_config.clone();
                     let msg = msg.clone();
                     let channels = channels.clone();
+                    let tracker = tracker.clone();
                     tokio::spawn(async move {
-                        match run_channel_job(&app, &db_path, &alias, &job_config, &msg).await {
+                        let result = run_channel_job(&app, &db_path, &alias, &job_config, &msg).await;
+                        release(&tracker, &alias);
+                        match result {
                             Ok(result) => {
                                 for out in &job_config.outputs {
                                     if out.channel.is_some() {
@@ -193,14 +246,23 @@ pub async fn run_daemon(app: &AppConfig) -> Result<()> {
                 for (alias, schedule) in &schedules {
                     if let Some(next) = schedule.next_from(last_cron_check) {
                         if next <= now {
-                            tracing::info!("[{}] cron triggered", alias);
                             if let Some((_, job_config)) = app.jobs.iter().find(|(a, _)| a == alias) {
+                                let exclusive = job_config.job.as_ref().and_then(|j| j.exclusive).unwrap_or(true);
+                                let cooldown = job_config.job.as_ref().and_then(|j| j.cooldown);
+                                if !try_acquire(&tracker, alias, exclusive, cooldown) {
+                                    continue;
+                                }
+
+                                tracing::info!("[{}] cron triggered", alias);
                                 let db_path = db_path.clone();
                                 let app = app.clone();
                                 let alias = alias.clone();
                                 let job_config = job_config.clone();
+                                let tracker = tracker.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = run_scheduled_job(&app, &db_path, &alias, &job_config).await {
+                                    let result = run_scheduled_job(&app, &db_path, &alias, &job_config).await;
+                                    release(&tracker, &alias);
+                                    if let Err(e) = result {
                                         tracing::error!("[{}] scheduled job failed: {}", alias, e);
                                     }
                                 });
@@ -360,8 +422,18 @@ async fn run_channel_job(
         .await?;
 
     if job_config.session.is_some() {
-        store.store_message(&msg.channel, &msg.sender, crate::store::MessageRole::User, &msg.text)?;
-        store.store_message(&msg.channel, &msg.sender, crate::store::MessageRole::Assistant, &result)?;
+        store.store_message(
+            &msg.channel,
+            &msg.sender,
+            crate::store::MessageRole::User,
+            &msg.text,
+        )?;
+        store.store_message(
+            &msg.channel,
+            &msg.sender,
+            crate::store::MessageRole::Assistant,
+            &result,
+        )?;
     }
 
     store.store_run(alias, &result)?;
@@ -397,6 +469,7 @@ mod tests {
             model: None,
             skip_permissions: None,
             allowed_tools: None,
+            timeout: None,
         }
     }
 
@@ -690,5 +763,61 @@ mod tests {
         }));
         let msg = make_msg("stdin", "concatenate");
         assert!(matches_input(&job, &msg));
+    }
+
+    fn make_tracker() -> JobTracker {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    #[test]
+    fn test_acquire_first_run() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", true, None));
+    }
+
+    #[test]
+    fn test_acquire_exclusive_blocks_second() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", true, None));
+        assert!(!try_acquire(&tracker, "job1", true, None));
+    }
+
+    #[test]
+    fn test_acquire_non_exclusive_allows_second() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", false, None));
+        assert!(try_acquire(&tracker, "job1", false, None));
+    }
+
+    #[test]
+    fn test_release_allows_reacquire() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", true, None));
+        release(&tracker, "job1");
+        assert!(try_acquire(&tracker, "job1", true, None));
+    }
+
+    #[test]
+    fn test_cooldown_blocks_too_soon() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", false, Some(3600)));
+        release(&tracker, "job1");
+        // Still within the 1-hour cooldown
+        assert!(!try_acquire(&tracker, "job1", false, Some(3600)));
+    }
+
+    #[test]
+    fn test_cooldown_zero_is_no_cooldown() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", false, Some(0)));
+        release(&tracker, "job1");
+        assert!(try_acquire(&tracker, "job1", false, Some(0)));
+    }
+
+    #[test]
+    fn test_separate_aliases_independent() {
+        let tracker = make_tracker();
+        assert!(try_acquire(&tracker, "job1", true, None));
+        assert!(try_acquire(&tracker, "job2", true, None));
     }
 }

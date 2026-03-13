@@ -32,13 +32,10 @@ pub async fn send(
             .map_err(|e| Error::Output(format!("failed to write to msmtp stdin: {e}")))?;
     }
 
-    let status = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        child.wait(),
-    )
-    .await
-    .map_err(|_| Error::Output("msmtp timed out after 60 seconds".to_string()))?
-    .map_err(|e| Error::Output(format!("failed to wait for msmtp: {e}")))?;
+    let status = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait())
+        .await
+        .map_err(|_| Error::Output("msmtp timed out after 60 seconds".to_string()))?
+        .map_err(|e| Error::Output(format!("failed to wait for msmtp: {e}")))?;
 
     if !status.success() {
         return Err(Error::Output(format!(

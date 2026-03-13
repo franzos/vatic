@@ -89,12 +89,18 @@ pub struct AgentSection {
     pub skip_permissions: Option<bool>,
     /// Only used when `skip_permissions` is false.
     pub allowed_tools: Option<Vec<String>>,
+    /// Agent timeout in seconds. Defaults to 300 (5 minutes). Use 0 for unlimited.
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct JobSection {
     pub interval: Option<String>,
     pub prompt: Option<String>,
+    /// Only allow one instance of this job at a time. Defaults to true.
+    pub exclusive: Option<bool>,
+    /// Minimum seconds between job starts.
+    pub cooldown: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
@@ -282,8 +288,8 @@ pub fn parse_job_config(value: &toml::Value) -> Result<JobConfig> {
 
 /// Convenience wrapper for tests and one-off parsing.
 pub fn parse_job_config_str(toml_str: &str) -> Result<JobConfig> {
-    let table: toml::Table = toml::from_str(toml_str)
-        .map_err(|e| Error::Config(format!("invalid TOML: {e}")))?;
+    let table: toml::Table =
+        toml::from_str(toml_str).map_err(|e| Error::Config(format!("invalid TOML: {e}")))?;
     parse_job_config(&toml::Value::Table(table))
 }
 

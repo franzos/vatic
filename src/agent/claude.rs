@@ -12,6 +12,7 @@ pub struct ClaudeAgent {
     model: Option<String>,
     skip_permissions: bool,
     allowed_tools: Option<Vec<String>>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl ClaudeAgent {
@@ -20,6 +21,11 @@ impl ClaudeAgent {
             model: config.model.clone(),
             skip_permissions: config.skip_permissions.unwrap_or(true),
             allowed_tools: config.allowed_tools.clone(),
+            timeout: match config.timeout {
+                Some(0) => None,
+                Some(s) => Some(std::time::Duration::from_secs(s)),
+                None => Some(std::time::Duration::from_secs(300)),
+            },
         }
     }
 
@@ -78,12 +84,14 @@ impl Agent for ClaudeAgent {
             // stdin drops here, signaling EOF to the child process
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(300),
-            child.wait_with_output(),
-        )
-        .await
-        .map_err(|_| Error::Agent("claude process timed out after 5 minutes".to_string()))?
+        let output = match self.timeout {
+            Some(dur) => tokio::time::timeout(dur, child.wait_with_output())
+                .await
+                .map_err(|_| {
+                    Error::Agent(format!("claude process timed out after {}s", dur.as_secs()))
+                })?,
+            None => child.wait_with_output().await,
+        }
         .map_err(|e| Error::Agent(format!("failed to wait for process: {e}")))?;
 
         if !output.status.success() {
@@ -113,6 +121,7 @@ mod tests {
             model: model.map(|s| s.to_string()),
             skip_permissions: None,
             allowed_tools: None,
+            timeout: None,
         };
         ClaudeAgent::new(&config)
     }
@@ -125,6 +134,7 @@ mod tests {
             model: None,
             skip_permissions: skip,
             allowed_tools: tools,
+            timeout: None,
         };
         ClaudeAgent::new(&config)
     }

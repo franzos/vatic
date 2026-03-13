@@ -45,7 +45,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_channel_noop() {
-        let result = dispatch(&output_config(Some(OutputName::Channel)), "test result", None).await;
+        let result = dispatch(
+            &output_config(Some(OutputName::Channel)),
+            "test result",
+            None,
+        )
+        .await;
         assert!(result.is_ok());
     }
 

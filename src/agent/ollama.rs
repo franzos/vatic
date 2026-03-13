@@ -11,8 +11,6 @@ use crate::error::{Error, Result};
 use super::Agent;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-// 5 minutes — models can be slow, especially on CPU
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct OllamaAgent {
     host: String,
@@ -22,11 +20,13 @@ pub struct OllamaAgent {
 
 impl OllamaAgent {
     pub fn new(config: &AgentSection) -> Self {
-        let client = Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let mut builder = Client::builder().connect_timeout(CONNECT_TIMEOUT);
+        builder = match config.timeout {
+            Some(0) => builder,
+            Some(s) => builder.timeout(Duration::from_secs(s)),
+            None => builder.timeout(Duration::from_secs(300)),
+        };
+        let client = builder.build().unwrap_or_else(|_| Client::new());
 
         Self {
             host: config
@@ -112,6 +112,7 @@ mod tests {
             model: model.map(|s| s.to_string()),
             skip_permissions: None,
             allowed_tools: None,
+            timeout: None,
         };
         OllamaAgent::new(&config)
     }

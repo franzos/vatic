@@ -69,7 +69,10 @@ pub async fn run_job(app: &AppConfig, alias: &str) -> Result<String> {
             None
         };
 
-        output::dispatch(output_section, &result, rendered_message.as_deref()).await?;
+        if let Err(e) = output::dispatch(output_section, &result, rendered_message.as_deref()).await
+        {
+            tracing::warn!("output dispatch failed: {e}");
+        }
     }
 
     Ok(result)
